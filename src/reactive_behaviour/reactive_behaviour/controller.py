@@ -7,11 +7,13 @@ from sensor_msgs.msg import LaserScan
 class VelocityController(Node):
 
     __max_speed = 0.1
-    __track_width = 0.25
 
     def __init__(self):
         super().__init__('velocity_controller')
-        self.__spin = False
+        self.__move_timer = 0
+        self.__turn_timer = 0
+        self.__turn_counter = 0
+        self.__spin = 0.5
         self.publisher = self.create_publisher(Twist, 'cmd_vel', 10)
         self.forward_distance = 0
         self.create_subscription(LaserScan, 'scan', self.laser_cb, rclpy.qos.qos_profile_sensor_data)
@@ -20,23 +22,40 @@ class VelocityController(Node):
         
     def timer_cb(self):
         msg = Twist()
-        x = self.forward_distance - 0.3
-        x = x if x < VelocityController.__max_speed else VelocityController.__max_speed
-        x = x if x >= 0 else 0.0
-        msg.linear.x = x
         
-        if self.__spin:
-            msg.angular.z = 0.5
+        if self.__turn_timer > 0:
+            msg.angular.z = self.__spin
+            self.__turn_timer -= 1
+        else:
+            x = self.forward_distance - 0.3
+            x = x if x < VelocityController.__max_speed else VelocityController.__max_speed
+            x = x if x >= 0 else 0.0
+            msg.linear.x = x
+            self.__move_timer -= 1
         
         self.publisher.publish(msg)
     
     def laser_cb(self, msg):
         self.forward_distance = msg.ranges[0]
-        for range in msg.ranges:
-            if range - 0.3 < VelocityController.__max_speed:
-                self.__spin = True
-                return
-        self.__spin = False
+        if self.__turn_timer > 0:
+            return
+        
+        n_ranges = len(msg.ranges)
+        left_range = msg.ranges[n_ranges//2]
+        right_range = msg.ranges[n_ranges//2 - 1]
+
+        incomplete_turn = (self.__turn_counter % 2 == 1) and (self.__move_timer <= 0)
+
+        if self.forward_distance - 0.3 < VelocityController.__max_speed or incomplete_turn:
+            # switch turn
+            if (self.__turn_counter % 2) == 0:
+                self.__spin *= -1
+
+            self.__turn_timer = 32
+            self.__move_timer = 40
+            self.__turn_counter += 1
+            self.get_logger().info(f"turn {self.__turn_counter}: turning in {'cw' if self.__spin < 0 else 'ccw'}")
+            return
 
         
 
