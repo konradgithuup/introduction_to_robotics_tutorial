@@ -31,10 +31,11 @@ class VelocityController(Node):
         x = x if x >= 0 else 0.0
 
         if (self.turning):
-            msg.angular.z = np.pi/4
-            self.turn_angle -= np.pi/40
+            msg.angular.z = 10 * (np.pi/180)
+            self.turn_angle -= 10 * (np.pi/180)
             if (self.turn_angle <= 0):
                 self.turning = False
+
         elif (self.turning_cd > 0):
             msg.linear.x = x
             self.turning_cd -= 1
@@ -43,8 +44,8 @@ class VelocityController(Node):
             ang = self.determine_angle(v)
             self.turn_angle = ang
             self.turning = True
-            self.turning_cd = 10
-
+            self.turning_cd = 30
+ 
         self.publisher.publish(msg)
     
     def goal_cb(self, msg):
@@ -66,8 +67,9 @@ class VelocityController(Node):
         current = [self.position[0] - self.position_old[0], self.position[1] - self.position_old[1]]
         v_adjusted = [v[0] - current[0], v[1] - current[1]]
         a_degrees = np.arccos(np.dot(v_adjusted, current) / (np.linalg.norm(v_adjusted) * np.linalg.norm(current)))
-
-        return (np.pi / 180) * a_degrees
+        self.get_logger().info(f"degrees: {a_degrees}")
+        return a_degrees
+        # return (np.pi / 180) * a_degrees
 
     def determine_trajectory(self):
         if (self.position == None or self.position_old == None):
@@ -99,8 +101,8 @@ class VelocityController(Node):
 
     def evaluate(self, x, y) -> float:
         
-        return np.linalg.norm([(x - self.goal[0]) ** 2,
-                                   (y - self.goal[1]) ** 2])
+        return np.linalg.norm([(x - self.goal[0]),
+                                   (y - self.goal[1])])
 
 def main(args=None):
     rclpy.init(args=args)
