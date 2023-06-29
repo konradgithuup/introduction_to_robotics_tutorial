@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
-
 import numpy as np
+import math
 
 from geometry_msgs.msg import Twist, PoseStamped, PointStamped
 from sensor_msgs.msg import LaserScan
@@ -13,11 +13,8 @@ class VelocityController(Node):
         self.publisher = self.create_publisher(Twist, 'cmd_vel', 10)
         self.forward_distance = 0
         self.goal = None
-        self.position_old = [0,0]
-        self.turn_angle = 0.0
         self.position = None
-        self.turning = False
-        self.turning_cd = 0
+        self.previous_position = None
         self.create_subscription(LaserScan, 'scan', self.laser_cb, rclpy.qos.qos_profile_sensor_data)
         self.create_subscription(PoseStamped, 'nav/goal', self.goal_cb, 10)
         self.create_subscription(PointStamped, 'position', self.position_cb, 10)
@@ -25,32 +22,35 @@ class VelocityController(Node):
         self.get_logger().info('controller node started')
         
     def timer_cb(self):
+        if self.forward_distance < 0.3:
+            msg = Twist()
+            msg.linear.x = 0.0
+            msg.angular.z = 1.0
+            self.publisher.publish(msg)
+            return
         msg = Twist()
-        x = self.forward_distance - 0.3
-        x = x if x < 0.1 else 0.1
-        x = x if x >= 0 else 0.0
+        msg.linear.x = 0.1
+        if self.goal is not None and self.position is not None and self.previous_position is not None:
+            # build triangle from previous-, current position and goal
+            current_diff = np.linalg.norm(self.goal - self.position)
+            prev_diff = np.linalg.norm(self.goal - self.previous_position)
+            trajectory = np.linalg.norm(self.position - self.previous_position)
+            # https://de.wikipedia.org/wiki/Dreieck#Sinussatz_und_Kosinussatz
+            angle = math.acos((trajectory**2 + prev_diff**2 - current_diff**2) / (2 * trajectory * prev_diff))
+            # determine cw/ccw
+            direction = np.cross(np.append(self.position , np.zeros(1,))- np.append(self.previous_position , np.zeros(1,)), np.append(self.goal , np.zeros(1,)) - np.append(self.previous_position , np.zeros(1,)))
+            if direction[-1] < 0:
+                angle = -angle
 
-        if (self.turning):
-            msg.angular.z = 10 * (np.pi/180)
-            self.turn_angle -= 10 * (np.pi/180)
-            if (self.turn_angle <= 0):
-                self.turning = False
-
-        elif (self.turning_cd > 0):
-            msg.linear.x = x
-            self.turning_cd -= 1
-        else:
-            v = self.determine_trajectory()
-            ang = self.determine_angle(v)
-            self.turn_angle = ang
-            self.turning = True
-            self.turning_cd = 30
- 
+            self.get_logger().info(f'angle: {angle}')
+            # trajectory will never match exactly
+            if (abs(angle) > 0.05):
+                msg.angular.z = math.copysign(0.25, angle)
         self.publisher.publish(msg)
     
     def goal_cb(self, msg):
-        goal = msg.pose.position.x, msg.pose.position.y
-        if self.goal != goal:
+        goal = np.array([msg.pose.position.x, msg.pose.position.y])
+        if self.goal is None or (self.goal != goal).all():
             self.get_logger().info(f'received a new goal: (x={goal[0]}, y={goal[1]})')
             self.goal = goal
     
@@ -58,51 +58,9 @@ class VelocityController(Node):
         self.forward_distance = msg.ranges[0]
         
     def position_cb(self, msg):
-        self.position_old = self.position
-        self.position = msg.point.x, msg.point.y
-    
-    def determine_angle(self, v: list[float]) -> float:
-        if (self.position == None or self.position_old == None):
-            return 0.0
-        current = [self.position[0] - self.position_old[0], self.position[1] - self.position_old[1]]
-        v_adjusted = [v[0] - current[0], v[1] - current[1]]
-        a_degrees = np.arccos(np.dot(v_adjusted, current) / (np.linalg.norm(v_adjusted) * np.linalg.norm(current)))
-        self.get_logger().info(f"degrees: {a_degrees}")
-        return a_degrees
-        # return (np.pi / 180) * a_degrees
+        self.previous_position = self.position
+        self.position = np.array([msg.point.x, msg.point.y])
 
-    def determine_trajectory(self):
-        if (self.position == None or self.position_old == None):
-            self.get_logger().warn("2 positions required to calculate trajectory")
-            return [0.1, 0.0]
-
-        delta_x = abs(self.position_old[0] - self.position[0])
-        delta_y = abs(self.position_old[1] - self.position[1])
-
-        v_x = self.partial(delta_x, "x")
-        v_y = self.partial(delta_y, "y")
-
-        return [v_x, v_y]
-
-    def partial(self, d: float, partial: str) -> float:
-        if (d == 0):
-            d = 0.01
-
-        x = self.position[0]
-        y = self.position[1]
-        p = [0.0, 0.0]
-        if partial == "x":
-            p = [x+d, y]
-        elif partial == "y":
-            p = [x, y+d]
-
-        f_part = (self.evaluate(p[0], p[1]) - self.evaluate(x, y)) / d
-        return f_part
-
-    def evaluate(self, x, y) -> float:
-        
-        return np.linalg.norm([(x - self.goal[0]),
-                                   (y - self.goal[1])])
 
 def main(args=None):
     rclpy.init(args=args)

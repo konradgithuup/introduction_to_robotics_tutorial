@@ -1,7 +1,6 @@
 import rclpy
 import numpy as np
 from rclpy.node import Node
-from scipy.optimize import minimize
 
 from driving_swarm_messages.msg import Range
 from geometry_msgs.msg import PointStamped
@@ -11,10 +10,11 @@ class LocatorNode(Node):
 
     def __init__(self):
         super().__init__('locator_node')
-        self.anchor_ranges: list[Range] = []
+        self.anchor_ranges = []
         self.create_subscription(Range, 'range', self.range_cb, 10)
         self.position_pub = self.create_publisher(PointStamped, 'position', 10)
         self.initialized = False
+        self.position = np.zeros((3,))
         self.create_timer(1.0, self.timer_cb)
         self.get_logger().info('locator node started')
         
@@ -27,45 +27,45 @@ class LocatorNode(Node):
 
     def timer_cb(self):
         if not self.initialized:
+            self.get_logger().info('no range received yet')
             return
         msg = PointStamped()
         msg.point.x, msg.point.y, msg.point.z = self.calculate_position()
         msg.header.frame_id = 'world'
+        self.get_logger().info(f'publishing position: {msg}')
         self.position_pub.publish(msg)
     
     def calculate_position(self):
         if not len(self.anchor_ranges):
             return 0.0, 0.0, 0.0
-        
-        # YOUR CODE GOES HERE:
-        x = np.mean([r.range for r in self.anchor_ranges]) - 0.5
+        x_old = self.position
 
-        if len(self.anchor_ranges) < 2:
-            return 0.0, 0.0, 0.0
+        for _ in range(100):
+            matrix = np.array([self.anchor_ranges[i].range
+                               - np.linalg.norm(np.array([
+                                   self.anchor_ranges[i].anchor.x,
+                                   self.anchor_ranges[i].anchor.y,
+                                   self.anchor_ranges[i].anchor.z]) - x_old)
+                                   for i in range(len(self.anchor_ranges))])
+            # partial derivatives for x, y, z
+            derivative_matrix = -1 * np.array([(x_old[j] - [self.anchor_ranges[i].anchor.x,
+                                                            self.anchor_ranges[i].anchor.y,
+                                                            self.anchor_ranges[i].anchor.z][j])
+                                               / np.linalg.norm(x_old - np.array([
+                                                   self.anchor_ranges[i].anchor.x,
+                                                   self.anchor_ranges[i].anchor.y,
+                                                   self.anchor_ranges[i].anchor.z]))
+                                                   for i in range(len(self.anchor_ranges))
+                                                   for j in range(3)]).reshape(len(self.anchor_ranges), 3)
+            # insert the drake memes here
+            x_new = x_old - np.matmul(np.linalg.pinv(derivative_matrix), matrix)
+            if np.linalg.norm(x_new - x_old) < 0.01:
+                break
+            x_old = x_new
+        self.position = x_old
+        self.get_logger().info(f"I am at {x_old}")
+        return tuple(x_old)
 
-        position_estimate = self.multilateration()
-
-        self.get_logger().info(f"I am at {position_estimate}")
-
-        # assume 2d (height will remain constant)
-        return position_estimate[0], position_estimate[1], 0.0
-    
-    # https://github.com/glucee/Multilateration/blob/master/Python/example.py
-    def multilateration(self):
-        def error(x, c, r):
-            return sum([(np.linalg.norm(x - c[i]) - r[i]) ** 2 for i in range(len(c))])
-        
-        anchor_coords = np.array([[range.anchor.x, range.anchor.y] for range in self.anchor_ranges])
-        anchor_ranges = np.array([range.range for range in self.anchor_ranges])
-
-        l = len(anchor_coords)
-        S = sum(anchor_ranges)
-	    # compute weight vector for initial guess
-        W = [((l - 1) * S) / (S - w) for w in anchor_ranges]
-	    # get initial guess of point location
-        x0 = sum([W[i] * anchor_coords[i] for i in range(l)])
-	    # optimize distance from signal origin to border of spheres
-        return minimize(error, x0, args=(anchor_coords, anchor_ranges), method='Nelder-Mead').x
 
 def main(args=None):
     rclpy.init(args=args)
